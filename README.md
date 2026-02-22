@@ -1,6 +1,10 @@
-# Encodec Explorer Environment
+# Encodec Explorer Core 
 
-Simple setup for the audio processing notebook.
+This is a notebook with some utilities for manipulating Encodec (24kHz) audio representations. 
+
+There are utilities for reading audio and .ecdc files, and for converting between audio, ecdc tokens, and latents. 
+
+
 
 ## Installation
 
