@@ -103,60 +103,6 @@ def encode_audio_to_tokens(audio, model, device, bandwidth, fmt: str = "TN", ret
 
     return out, enc
 
-# @torch.no_grad()
-# def encode_audio_to_tokens_old(audio, model, device, bandwidth=None):
-#     """
-#     audio: torch.Tensor or np.ndarray
-#           accepted shapes: [T], [B,T], [B,1,T], [B,2,T]
-#     model: HF EncodecModel
-#     device: "cpu" or "cuda"
-#     bandwidth: float or None (must be in model.config.target_bandwidths if provided)
-#     """
-#     import numpy as np
-#     import torch
-
-#     if isinstance(audio, np.ndarray):
-#         audio = torch.from_numpy(audio)
-
-#     audio = audio.float()
-
-#     # Force [B,C,T]
-#     if audio.ndim == 1:
-#         audio = audio.unsqueeze(0).unsqueeze(0)   # [1,1,T]
-#     elif audio.ndim == 2:
-#         audio = audio.unsqueeze(1)                # [B,1,T]
-#     elif audio.ndim == 3:
-#         pass                                      # already [B,C,T]
-#     else:
-#         raise ValueError(f"Unexpected audio shape {tuple(audio.shape)}; need [T], [B,T], or [B,C,T].")
-
-#     audio = audio.to(device)
-
-#     if bandwidth is None:
-#         enc = model.encode(audio)
-#     else:
-#         enc = model.encode(audio, bandwidth=bandwidth)
-
-#     codes = enc.audio_codes
-
-#     # Normalize to tokens [frames, N] (batch 0)
-#     if codes.ndim == 4:
-#         # [B, 1, N, frames] -> [N,frames] -> [frames,N]
-#         tokens_TN = codes[0, 0].transpose(0, 1).contiguous()
-#     elif codes.ndim == 3:
-#         # [B, N, frames] -> [frames,N]
-#         tokens_TN = codes[0].transpose(0, 1).contiguous()
-#     else:
-#         raise ValueError(f"Unexpected audio_codes shape {tuple(codes.shape)}")
-
-#     return tokens_TN.cpu(), enc
-
-# # Example:
-# # wavpath = "/path/to/some_24khz.wav"
-# # audio_1T = load_wav_mono(wavpath, 24000)
-# # tokens_from_audio_TN, enc_raw = encode_audio_to_tokens(audio_1T, model, bw)
-# # print(tokens_from_audio_TN.shape)
-
 
 
 def load_ecdc(path: str):
@@ -227,9 +173,9 @@ def ensure_BCT(audio: torch.Tensor) -> torch.Tensor:
 #  You only need to do this once!
 
 @torch.no_grad()
-def build_E_eff_via_layer_decode(model, n_q: int, K: int, device=None) -> torch.Tensor:
+def build_LOOKUP_via_layer_decode(model, n_q: int, K: int, device=None) -> torch.Tensor:
     """
-    Builds E_eff of shape (n_q, K, 128) by calling layers[q].decode(idx_all).
+    Builds LOOKUP of shape (n_q, K, 128) by calling layers[q].decode(idx_all).
 
     This matches your RNeNcodec method:
         idx_all: (K,1)
@@ -259,59 +205,28 @@ def build_E_eff_via_layer_decode(model, n_q: int, K: int, device=None) -> torch.
 # Can be used as a source "pool" of talents for style transfer purposes
 
 @torch.no_grad()
-def tokens_to_summary_latents(tokens_TN: torch.Tensor, E_eff_QKD: torch.Tensor) -> torch.Tensor:
+def tokens_to_summary_latents(tokens_TN: torch.Tensor, LOOKUP_QKD: torch.Tensor) -> torch.Tensor:
     """
     tokens_TN: (T, n_q) long
-    E_eff_QKD: (n_q, K, 128)
+    LOOKUP_QKD: (n_q, K, 128)
     returns:   (T, 128)
     """
-    tokens_TN = tokens_TN.to(E_eff_QKD.device, dtype=torch.long)
+    tokens_TN = tokens_TN.to(LOOKUP_QKD.device, dtype=torch.long)
     T, n_q = tokens_TN.shape
     print(f'Taking tokens_to_summary_latents with n_q={n_q}')
-    assert E_eff_QKD.shape[0] >= n_q
+    assert LOOKUP_QKD.shape[0] >= n_q
 
-    z_TD = torch.zeros(T, 128, device=E_eff_QKD.device, dtype=E_eff_QKD.dtype)
+    z_TD = torch.zeros(T, 128, device=LOOKUP_QKD.device, dtype=LOOKUP_QKD.dtype)
     for q in range(n_q):
-        z_TD.add_(E_eff_QKD[q][tokens_TN[:, q]])
+        z_TD.add_(LOOKUP_QKD[q][tokens_TN[:, q]])
     return z_TD
 
 # ---- Same as above, but only for one level of a token stack
 @torch.no_grad()
-def token_level_to_latents(tokens_TN: torch.Tensor, level_q: int, E_eff_QKD: torch.Tensor) -> torch.Tensor:
-    tokens_TN = tokens_TN.to(E_eff_QKD.device, dtype=torch.long)
-    return E_eff_QKD[level_q][tokens_TN[:, level_q]]  # (T,128)
+def token_level_to_latents(tokens_TN: torch.Tensor, level_q: int, LOOKUP_QKD: torch.Tensor) -> torch.Tensor:
+    tokens_TN = tokens_TN.to(LOOKUP_QKD.device, dtype=torch.long)
+    return LOOKUP_QKD[level_q][tokens_TN[:, level_q]]  # (T,128)
     
-#=======================================================================
-#=======================================================================
-# No for transformine auido to latents
-
-# @torch.no_grad()
-# def audio_to_codes(audio, model, device: str, bandwidth):
-#     """
-#     audio -> codes (tokens)
-
-#     Returns:
-#       codes_BQT: LongTensor [B, n_q, T_frames]
-#       enc: encode output (contains audio_codes, audio_scales, etc.)
-#     """
-#     if not isinstance(audio, torch.Tensor):
-#         audio = torch.tensor(audio)
-
-#     audio_BCT = ensure_BCT(audio.float()).to(device)
-#     model.eval()
-
-#     enc = model.encode(audio_BCT) if bandwidth is None else model.encode(audio_BCT, bandwidth=bandwidth)
-
-#     codes = enc.audio_codes
-#     # common: [B,1,n_q,T] -> [B,n_q,T]
-#     codes_BQT = codes[:, 0] if codes.ndim == 4 else codes
-#     if codes_BQT.ndim != 3:
-#         raise ValueError(f"Unexpected audio_codes shape {tuple(codes.shape)} -> {tuple(codes_BQT.shape)}")
-
-#     n_q=codes_BQT.shape[1]
-#     print(f'Taking audio_to_codes with n_q={n_q}')
-#     return codes_BQT.contiguous(), enc
-
 
 @torch.no_grad()
 def audio_to_latents(audio, model, device: str, bandwidth):
@@ -341,3 +256,52 @@ def audio_to_latents(audio, model, device: str, bandwidth):
     z_T128 = z_BTD[0]                              # [T,128]
     codes_TQ = codes_BQT[0].transpose(0, 1).contiguous()  # [T,n_q]
     return z_T128, codes_TQ, enc
+
+#====================================================
+# Latents to audio
+#----------------------------------------------------
+@torch.no_grad()
+def latents128_to_audio(model, z_T128, device):
+    """
+    z_T128: [T_frames, 128] quantized latents (the thing you verified).
+    Returns: audio_1T: [1, num_samples]
+    """
+    model.eval()
+    z_T128 = z_T128.to(device)
+
+    # decoder expects [B, D, T_frames]
+    z_BDT = z_T128.unsqueeze(0).transpose(1, 2).contiguous()  # [1,128,T]
+
+    # Most HF builds expose decoder as model.decoder(...)
+    audio_BCT = model.decoder(z_BDT)  # [1,C,T_samples]
+    return audio_BCT[:, 0, :].contiguous()
+
+
+#====================================================
+# tokens_TN_to_audio_1T
+#----------------------------------------------------
+
+@torch.no_grad()
+def tokens_TN_to_audio_1T(model, tokens_TN: torch.Tensor, device, audio_scales=None, last_frame_pad_length: int = 0):
+    """
+    tokens_TN: [T_frames, N] (TN format)
+    Returns: audio_1T: [1, num_samples] on CPU (ready for IPython Audio)
+    """
+    model.eval()
+    tokens_TN = tokens_TN.to(device, dtype=torch.long)
+
+    # HF expects [B,1,N,T]
+    codes_B1NT = tokens_TN.transpose(0, 1).unsqueeze(0).unsqueeze(0).contiguous()
+
+    if audio_scales is None:
+        audio_scales = [None]  # matches your .ecdc files
+
+    audio_BCT = model.decode(
+        audio_codes=codes_B1NT,
+        audio_scales=audio_scales,
+        last_frame_pad_length=last_frame_pad_length,
+        padding_mask=None,
+    )[0]  # [B,C,T]
+
+    return audio_BCT[:, 0, :].detach().cpu().contiguous()
+

@@ -19,8 +19,6 @@ pip install -r requirements.txt
 # 4. Register Jupyter kernel
 python -m ipykernel install --user --name encodec_explore --display-name "Encodec Explorer"
 
-# 5. Test installation (optional)
-python test_installation.py
 ```
 
 ## Usage
